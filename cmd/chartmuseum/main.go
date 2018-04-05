@@ -14,8 +14,6 @@ import (
 
 var (
 	crash = log.Fatal
-	echo  = fmt.Print
-	exit  = os.Exit
 
 	newServer = chartmuseum.NewServer
 
@@ -40,29 +38,29 @@ func cliHandler(c *cli.Context) {
 	backend := backendFromContext(c)
 
 	options := chartmuseum.ServerOptions{
-		Debug:                  c.Bool("debug"),
-		LogJSON:                c.Bool("log-json"),
-		EnableAPI:              !c.Bool("disable-api"),
-		EnableMetrics:          !c.Bool("disable-metrics"),
-		AllowOverwrite:         c.Bool("allow-overwrite"),
+		StorageBackend:         backend,
 		ChartURL:               c.String("chart-url"),
 		TlsCert:                c.String("tls-cert"),
 		TlsKey:                 c.String("tls-key"),
 		Username:               c.String("basic-auth-user"),
 		Password:               c.String("basic-auth-pass"),
-		StorageBackend:         backend,
 		ChartPostFormFieldName: c.String("chart-post-form-field-name"),
 		ProvPostFormFieldName:  c.String("prov-post-form-field-name"),
+		ContextPath:            c.String("context-path"),
+		LogJSON:                c.Bool("log-json"),
+		Debug:                  c.Bool("debug"),
+		EnableAPI:              !c.Bool("disable-api"),
+		AllowOverwrite:         c.Bool("allow-overwrite"),
+		EnableMetrics:          !c.Bool("disable-metrics"),
+		AnonymousGet:           c.Bool("auth-anonymous-get"),
+		GenIndex:               c.Bool("gen-index"),
+		IndexLimit:             c.Int("index-limit"),
+		Depth:                  c.Int("depth"),
 	}
 
 	server, err := newServer(options)
 	if err != nil {
 		crash(err)
-	}
-
-	if c.Bool("gen-index") {
-		echo(string(server.RepositoryIndex.Raw[:]))
-		exit(0)
 	}
 
 	server.Listen(c.Int("port"))
@@ -81,6 +79,10 @@ func backendFromContext(c *cli.Context) storage.Backend {
 		backend = amazonBackendFromContext(c)
 	case "google":
 		backend = googleBackendFromContext(c)
+	case "microsoft":
+		backend = microsoftBackendFromContext(c)
+	case "alibaba":
+		backend = alibabaBackendFromContext(c)
 	default:
 		crash("Unsupported storage backend: ", storageFlag)
 	}
@@ -106,6 +108,7 @@ func amazonBackendFromContext(c *cli.Context) storage.Backend {
 		c.String("storage-amazon-prefix"),
 		c.String("storage-amazon-region"),
 		c.String("storage-amazon-endpoint"),
+		c.String("storage-amazon-sse"),
 	))
 }
 
@@ -114,6 +117,24 @@ func googleBackendFromContext(c *cli.Context) storage.Backend {
 	return storage.Backend(storage.NewGoogleCSBackend(
 		c.String("storage-google-bucket"),
 		c.String("storage-google-prefix"),
+	))
+}
+
+func microsoftBackendFromContext(c *cli.Context) storage.Backend {
+	crashIfContextMissingFlags(c, []string{"storage-microsoft-container"})
+	return storage.Backend(storage.NewMicrosoftBlobBackend(
+		c.String("storage-microsoft-container"),
+		c.String("storage-microsoft-prefix"),
+	))
+}
+
+func alibabaBackendFromContext(c *cli.Context) storage.Backend {
+	crashIfContextMissingFlags(c, []string{"storage-alibaba-bucket"})
+	return storage.Backend(storage.NewAlibabaCloudOSSBackend(
+		c.String("storage-alibaba-bucket"),
+		c.String("storage-alibaba-prefix"),
+		c.String("storage-alibaba-endpoint"),
+		c.String("storage-alibaba-sse"),
 	))
 }
 
@@ -181,6 +202,11 @@ var cliFlags = []cli.Flag{
 		Usage:  "password for basic http authentication",
 		EnvVar: "BASIC_AUTH_PASS",
 	},
+	cli.BoolFlag{
+		Name:   "auth-anonymous-get",
+		Usage:  "allow anonymous GET operations when auth is used",
+		EnvVar: "AUTH_ANONYMOUS_GET",
+	},
 	cli.StringFlag{
 		Name:   "tls-cert",
 		Usage:  "path to tls certificate chain file",
@@ -222,6 +248,11 @@ var cliFlags = []cli.Flag{
 		EnvVar: "STORAGE_AMAZON_ENDPOINT",
 	},
 	cli.StringFlag{
+		Name:   "storage-amazon-sse",
+		Usage:  "server side encryption algorithm",
+		EnvVar: "STORAGE_AMAZON_SSE",
+	},
+	cli.StringFlag{
 		Name:   "storage-google-bucket",
 		Usage:  "gcs bucket to store charts for google storage backend",
 		EnvVar: "STORAGE_GOOGLE_BUCKET",
@@ -230,6 +261,36 @@ var cliFlags = []cli.Flag{
 		Name:   "storage-google-prefix",
 		Usage:  "prefix to store charts for --storage-google-bucket",
 		EnvVar: "STORAGE_GOOGLE_PREFIX",
+	},
+	cli.StringFlag{
+		Name:   "storage-microsoft-container",
+		Usage:  "container to store charts for microsoft storage backend",
+		EnvVar: "STORAGE_MICROSOFT_CONTAINER",
+	},
+	cli.StringFlag{
+		Name:   "storage-microsoft-prefix",
+		Usage:  "prefix to store charts for --storage-microsoft-prefix",
+		EnvVar: "STORAGE_MICROSOFT_PREFIX",
+	},
+	cli.StringFlag{
+		Name:   "storage-alibaba-bucket",
+		Usage:  "OSS bucket to store charts for Alibaba Cloud storage backend",
+		EnvVar: "STORAGE_ALIBABA_BUCKET",
+	},
+	cli.StringFlag{
+		Name:   "storage-alibaba-prefix",
+		Usage:  "prefix to store charts for --storage-alibaba-cloud-bucket",
+		EnvVar: "STORAGE_ALIBABA_PREFIX",
+	},
+	cli.StringFlag{
+		Name:   "storage-alibaba-endpoint",
+		Usage:  "OSS endpoint",
+		EnvVar: "STORAGE_ALIBABA_ENDPOINT",
+	},
+	cli.StringFlag{
+		Name:   "storage-alibaba-sse",
+		Usage:  "server side encryption algorithm for Alibaba Cloud storage backend, AES256 or KMS",
+		EnvVar: "STORAGE_ALIBABA_SSE",
 	},
 	cli.StringFlag{
 		Name:   "chart-post-form-field-name",
@@ -242,5 +303,23 @@ var cliFlags = []cli.Flag{
 		Value:  "prov",
 		Usage:  "form field which will be queried for the provenance file content",
 		EnvVar: "PROV_POST_FORM_FIELD_NAME",
+	},
+	cli.IntFlag{
+		Name:   "index-limit",
+		Value:  0,
+		Usage:  "parallel scan limit for the repo indexer",
+		EnvVar: "INDEX_LIMIT",
+	},
+	cli.StringFlag{
+		Name:   "context-path",
+		Value:  "",
+		Usage:  "base context path",
+		EnvVar: "CONTEXT_PATH",
+	},
+	cli.IntFlag{
+		Name:   "depth",
+		Value:  0,
+		Usage:  "levels of nested repos for multitenancy",
+		EnvVar: "DEPTH",
 	},
 }
